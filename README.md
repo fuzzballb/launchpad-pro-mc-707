@@ -1,3 +1,14 @@
+# MC-707 clip launcher firmware for OG Lounchpad PRO
+
+The clips on the Roland MC-707 can be changed using program changes. There are exampels of this on Youtube, where ether the Lounchpad PRO MK II or and IPad is used to do this. The reason is because these devices can be programmed with a visual editor to send the program changes to the MC-707. 
+
+Since I have the old Lounchpad Pro myself, I decided to program these midi program changes into the open source software.
+
+This is very much a work in progress, but the initial version seems to work.
+
+
+# based on the project below
+
 [![Build Status](https://travis-ci.org/dvhdr/launchpad-pro.svg?branch=master)](https://travis-ci.org/dvhdr/launchpad-pro)
 
 # Launchpad Pro
