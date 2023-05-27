@@ -1,4 +1,4 @@
-# MC-707 clip launcher firmware for OG Lounchpad PRO
+# MC-707 clip launcher firmware for OG LaunchPad PRO
 
 The clips on the Roland MC-707 can be changed using program changes. There are exampels of this on Youtube, where ether the LaunchPad PRO MK II or an1 IPad is used to do this. The reason is because these devices can be programmed with a visual editor to send the program changes to the MC-707. 
 
