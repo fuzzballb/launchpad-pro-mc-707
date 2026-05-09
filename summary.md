@@ -81,7 +81,7 @@ Offsets 9–72:   g_preset[0..7][0..7]   (8 bytes × 8 slots)
 Total: 73 bytes
 ```
 
-Auto-saved to flash on every pad toggle. Loaded on boot if magic byte matches.
+Saved to flash when switching from prog → play mode (button 91). Loaded on boot if magic byte matches.
 
 ### LED colour scheme
 
@@ -92,9 +92,11 @@ Auto-saved to flash on every pad toggle. Loaded on boot if magic byte matches.
 | Play mode — inactive pad | Off |
 | Prog mode — active pad | Red |
 | Prog mode — inactive pad | Off |
-| Left column — selected slot in prog | Red |
-| Left column — selected slot in play | Bright yellow |
-| Left column — slot has data | Dim yellow |
+| Bottom edge (row 0, col 1–8) — track idle | Yellow |
+| Bottom edge (row 0, col 1–8) — clip playing | Off |
+| Left column — selected slot (prog mode) | Red |
+| Left column — selected slot (play mode) | Yellow |
+| Left column — slot has data, not selected | Dim blue |
 | Left column — empty slot | Off |
 | Button 91 — play mode | Dim teal |
 | Button 91 — prog mode | Orange |
