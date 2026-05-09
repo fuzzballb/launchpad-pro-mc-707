@@ -90,7 +90,7 @@ static void delete_slot(int slot)
 }
 
 // ____________________________________________________________________________
-// Flash  (auto-saved on every change)
+// Flash  (saved when returning to play mode)
 
 #define FLASH_MAGIC  0xAB
 // Layout: [0]=magic  [1..8]=valid_flags  [9..72]=preset_bits[0..7][0..7]
@@ -169,11 +169,23 @@ static void set_mode_btn_led(void)
         hal_plot_led(TYPEPAD, BTN_MODE, 0, 8, 12);             // dim teal = play (tap to edit)
 }
 
+static void set_bottom_edge_leds(void)
+{
+    for (int col = 1; col <= 8; col++) {
+        u8 idx = (u8)col;  // row 0, col 1-8
+        if (g_mode == MODE_PLAY && g_playing_row[col] == 0)
+            hal_plot_led(TYPEPAD, idx, MAXLED, MAXLED, 0);  // yellow = track idle
+        else
+            hal_plot_led(TYPEPAD, idx, 0, 0, 0);
+    }
+}
+
 static void update_all_leds(void)
 {
     set_inner_leds();
     set_left_col_leds();
     set_mode_btn_led();
+    set_bottom_edge_leds();
 }
 
 // ____________________________________________________________________________
@@ -189,7 +201,12 @@ void app_surface_event(u8 type, u8 index, u8 value)
     // ---- Mode toggle button (91) ----
     if (index == BTN_MODE) {
         if (!value) return;
-        g_mode = (g_mode == MODE_PLAY) ? MODE_PROG : MODE_PLAY;
+        if (g_mode == MODE_PROG) {
+            flash_save();
+            g_mode = MODE_PLAY;
+        } else {
+            g_mode = MODE_PROG;
+        }
         update_all_leds();
         return;
     }
@@ -204,6 +221,7 @@ void app_surface_event(u8 type, u8 index, u8 value)
             hal_send_midi(DINMIDI, (u8)(0xC0 + col - 1), 8, 0);
             g_playing_row[col] = 0;  // clear playing state for this track
             set_inner_leds();
+            set_bottom_edge_leds();
         } else {
             // prog mode: only button 1 is the delete-hold
             if (index == BTN_DELETE)
@@ -219,6 +237,7 @@ void app_surface_event(u8 type, u8 index, u8 value)
             if (g_slot >= 0 && pad_is_active(g_slot, col, row)) {
                 g_playing_row[col] = (u8)row;
                 set_inner_leds();
+                set_bottom_edge_leds();
                 hal_send_midi(USBMIDI, (u8)(0xC0 + col - 1), (u8)(8 - row), 0);
                 hal_send_midi(DINMIDI, (u8)(0xC0 + col - 1), (u8)(8 - row), 0);
             }
@@ -227,7 +246,6 @@ void app_surface_event(u8 type, u8 index, u8 value)
                 pad_toggle(g_slot, col, row);
                 set_inner_leds();
                 set_left_col_leds();  // valid flag may have changed
-                flash_save();
             }
         }
         return;
@@ -241,7 +259,6 @@ void app_surface_event(u8 type, u8 index, u8 value)
         if (g_mode == MODE_PROG && g_btn_del_held) {
             delete_slot(slot);
             update_all_leds();
-            flash_save();
         } else {
             g_slot = (s8)slot;
             update_all_leds();
