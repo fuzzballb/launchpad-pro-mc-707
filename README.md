@@ -1,13 +1,60 @@
-# MC-707 clip launcher firmware for OG LaunchPad PRO
+# MC-707 Clip Launcher — Launchpad Pro Custom Firmware
 
-The clips on the Roland MC-707 can be changed using program changes. There are exampels of this on Youtube, where ether the LaunchPad PRO MK II or an1 IPad is used to do this. The reason is because these devices can be programmed with a visual editor to send the program changes to the MC-707. 
+Custom open firmware for the original Novation **Launchpad Pro** (not MK2/MK3) that turns it into a clip launcher for the **Roland MC-707**. The MC-707 accepts MIDI Program Change messages to trigger clips per track. This firmware maps the 8×8 inner grid to those messages and adds a preset system so you can save and recall different pad layouts.
 
-Since I have the old LaunchPad Pro myself, I decided to program these midi program changes into the open source software.
+> For a full technical reference — pad index scheme, MIDI mapping, flash layout, build instructions, and LED colour meanings — see **[summary.md](summary.md)**.
 
-This is very much a work in progress, but the initial version seems to work.
+## Features
 
+- **8 presets** stored in flash, selected via the left-column round buttons
+- **Play mode** (default): active pads glow blue; pressing one sends a Program Change to the MC-707 and turns the pad yellow to show the clip is playing. Bottom-edge buttons (row 0) send a stop/empty clip on that track.
+- **Prog mode** (press button 91 to toggle): toggle pads on/off per preset. Active pads glow red. Hold button 1 + a preset button to delete that preset.
+- Presets auto-save to flash on every change — no save button needed.
+- CLI simulator (interactive, ANSI 24-bit colour) and resizable SDL2 GUI simulator for development without hardware.
 
-# based on the project below
+## MIDI mapping
+
+```
+Program Change
+  channel = col - 1      (columns 1–8 → MIDI channels 0–7)
+  program = 8 - row      (row 8 → prog 0,  row 1 → prog 7)
+
+Bottom edge (row 0):
+  program = 8            (map this to an empty/stop clip on the MC-707)
+```
+
+Sent simultaneously on USB MIDI and DIN MIDI.
+
+## Quick start (Linux)
+
+```bash
+# Dependencies
+sudo pacman -S arm-none-eabi-gcc arm-none-eabi-binutils arm-none-eabi-newlib sdl2
+
+# Clone and init submodule
+git clone --recursive <repo-url>
+
+# Build firmware + run basic simulator test
+make
+
+# Interactive CLI simulator
+./build/simulator -i
+
+# SDL2 GUI simulator
+make gui
+```
+
+## Flashing
+
+1. Hold **Setup** while plugging in USB (bootloader mode — dim LED pattern)
+2. Confirm: `amidi -l` shows `Launchpad Pro` (not `Launchpad Open`)
+3. Flash: `amidi -p hw:2,0,0 -s build/launchpad_pro.syx`
+
+Restore factory firmware with `resources/Launchpad Pro-1.0.154.syx` the same way.
+
+---
+
+# Based on the project below
 
 [![Build Status](https://travis-ci.org/dvhdr/launchpad-pro.svg?branch=master)](https://travis-ci.org/dvhdr/launchpad-pro)
 
@@ -123,29 +170,26 @@ By calling into the HAL, your app can:
 The best way to learn about these is to read the documentation in `app.h`, and to study the (very basic) example code!
 
 # Debugging
-We decided not to support or encourage using a hardware debugger, as opening a Launchpad Pro to fit a debugging header can easily damage the FSR (force sensitive resistor) sheet.
 
-Instead, you're going to have to do things the old fashioned way - by blinking LEDs or sending MIDI messages (though hopefully no need for a 'scope!).  For what it's worth, that's the way I've developed this version of the firmware - dogfooding all the way ;)
+Hardware debugging is not supported (opening the unit risks the FSR sheet). Instead, use the simulators:
 
-If do you want to debug interactively (and of course you do), you can use the interactive desktop simulator on macOS:
+### CLI simulator (interactive)
 
-1. Build the Xcode project located in `/tools/osx`
-2. Connect your Launchpad Pro
-3. Install the factory firmware on your Launchpad Pro
-4. Put the Launchpad Pro into "Programmer" mode using the Setup button (you'll get odd behaviour otherwise)
-5. Start debugging in Xcode!
+```bash
+./build/simulator -i
+```
 
-Currently it only supports button presses and LED messages - there's no setup button, flash storage or aftertouch (yet).  It has a really awful busywaiting timer for the 1kHz tick.  However, it does allow you to debug your application logic using Xcode!
+Commands: `p <idx>` press pad, `r <idx>` release, `s` setup button, `m <port> <st> <d1> <d2>` MIDI event, `t [n]` timer ticks, `g` redraw grid, `q` quit. The grid renders in ANSI 24-bit colour.
 
-You can also use the simple command-line simulator located in the `/tools` directory.  It is compiled and ran as part of the build process, so it serves as a very basic test of your app before it is baked into a sysex dump - more of a test harness.
+### SDL2 GUI simulator
 
-To debug the simulator interactively in Eclipse:
+```bash
+make gui
+```
 
-1. Click the down arrow next to the little "bug" icon in the toolbar
-2. Choose "Debug configurations..."
-3. Right click "C/C++ Application" and choose "New...:
-4. Under "C/C++ Application" click Browse... and locate the simulator binary at `/vagrant/build/simulator`
-5. Hit "Debug"!
+Renders the full 10×10 grid with correct round/square button shapes. Window is resizable. Click = press/release, Space = 1 timer tick, T = 100 ticks, Q/Esc = quit. Flash storage and LED state are fully simulated.
+
+The basic (non-interactive) simulator also runs automatically as part of `make` as a smoke test.
 
 # The Hardware
 The Launchpad Pro is based around an ARM Cortex M3 from STMicroelectronics.  Specifically, an [STM32F103RBT6](http://www.st.com/web/catalog/mmc/FM141/SC1169/SS1031/LN1565/PF164487).  It's clocked at 72MHz, and has 20k RAM (I'm not sure how much of this we're using in the open build yet - should be a fair amount left but I haven't measured it).  The low level LED multiplexing and pad/switch scanning consume a fair bit of CPU time in interrupt mode, but have changed a little in the open firmware library (so again, I don't have measurements for how many cycles they're using).

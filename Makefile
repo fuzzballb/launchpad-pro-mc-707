@@ -16,6 +16,7 @@ ELF = $(BUILDDIR)/launchpad_pro.elf
 HEX = $(BUILDDIR)/launchpad_pro.hex
 HEXTOSYX = $(BUILDDIR)/hextosyx
 SIMULATOR = $(BUILDDIR)/simulator
+GUISIM    = $(BUILDDIR)/gui_simulator
 
 # tools
 HOST_GPP = g++
@@ -62,6 +63,13 @@ DEPENDS := $(OBJECTS:.o=.d)
 $(BUILDDIR)/%.o: %.c
 	mkdir -p $(dir $@)
 	$(CC) -c $(CFLAGS) -MMD -o $@ $<
+
+gui: $(GUISIM)
+	./$(GUISIM)
+
+$(GUISIM):
+	$(HOST_GCC) -g3 -O0 -std=c99 -Iinclude $(TOOLS)/gui_simulator.c $(SOURCES) -o $(GUISIM) \
+	    $(shell pkg-config --cflags --libs sdl2) -lm
 
 clean:
 	rm -rf $(BUILDDIR)

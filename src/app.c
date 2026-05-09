@@ -1,22 +1,22 @@
 /******************************************************************************
- 
+
  Copyright (c) 2015, Focusrite Audio Engineering Ltd.
  All rights reserved.
- 
+
  Redistribution and use in source and binary forms, with or without
  modification, are permitted provided that the following conditions are met:
- 
+
  * Redistributions of source code must retain the above copyright notice, this
  list of conditions and the following disclaimer.
- 
+
  * Redistributions in binary form must reproduce the above copyright notice,
  this list of conditions and the following disclaimer in the documentation
  and/or other materials provided with the distribution.
- 
+
  * Neither the name of Focusrite Audio Engineering Ltd., nor the names of its
  contributors may be used to endorse or promote products derived from
  this software without specific prior written permission.
- 
+
  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
  AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
@@ -27,232 +27,250 @@
  CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
  OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- 
+
  *****************************************************************************/
 
-//______________________________________________________________________________
-//
-// Headers
-//______________________________________________________________________________
-
 #include "app.h"
-#include <stdio.h>
-#include <stdint.h>
-#include <math.h>
+#include <string.h>
 
-//______________________________________________________________________________
-//
-// This is where the fun is!  Add your code to the callbacks below to define how
-// your app behaves.
-//
-// In this example, we either render the raw ADC data as LED rainbows or store
-// and recall the pad state from flash.
-//______________________________________________________________________________
+// ____________________________________________________________________________
+// Constants
 
-// store ADC frame pointer
-static const u16 *g_ADC = 0;
+#define PRESET_COUNT  8       // slots 0-7, mapped to left-col buttons 10-80
+#define MODE_PLAY     0       // default: blue active pads, press to send MIDI
+#define MODE_PROG     1       // editing: red active pads, toggle on/off
 
-// buffer to store pad states for flash save
-#define BUTTON_COUNT 100
+// Button indices
+#define BTN_MODE      91      // top row: toggle play/prog mode
+#define BTN_DELETE    1       // bottom row: hold + left-col = delete that preset
 
-u8 g_Buttons[BUTTON_COUNT] = {0};
+// ____________________________________________________________________________
+// State
 
+static const u16 *g_ADC;
 
-// store last program change 
-uint8_t midi_stored = 0xC0;
-uint8_t midi_value_stored = 0x00;
-//uint8_t midi_stored_index = 0;
+static u8  g_mode         = MODE_PLAY;
+static s8  g_slot         = -1;    // currently selected preset slot (-1 = none)
+static u8  g_btn_del_held = 0;     // is BTN_DELETE currently held?
 
-//______________________________________________________________________________
+// Each preset is a 64-bit bitmask over the 8×8 inner grid.
+// Bit layout: bit = (row-1)*8 + (col-1), stored across 8 bytes.
+static u8  g_preset[PRESET_COUNT][8];
+static u8  g_preset_valid[PRESET_COUNT];  // 1 if slot has at least one active pad
+
+// Per-column playing state: g_playing_row[col] = row currently playing (0 = none).
+// col range 1-8; row range 1-8.
+static u8  g_playing_row[9];  // index 0 unused
+
+// ____________________________________________________________________________
+// Preset bit helpers
+
+static int pad_is_active(int slot, int col, int row)
+{
+    if (slot < 0 || slot >= PRESET_COUNT) return 0;
+    int bit = (row-1)*8 + (col-1);
+    return (g_preset[slot][bit >> 3] >> (bit & 7)) & 1;
+}
+
+static void pad_toggle(int slot, int col, int row)
+{
+    int bit = (row-1)*8 + (col-1);
+    g_preset[slot][bit >> 3] ^= (u8)(1 << (bit & 7));
+
+    // recompute valid flag
+    g_preset_valid[slot] = 0;
+    for (int b = 0; b < 8; b++)
+        if (g_preset[slot][b]) { g_preset_valid[slot] = 1; break; }
+}
+
+static void delete_slot(int slot)
+{
+    memset(g_preset[slot], 0, 8);
+    g_preset_valid[slot] = 0;
+}
+
+// ____________________________________________________________________________
+// Flash  (auto-saved on every change)
+
+#define FLASH_MAGIC  0xAB
+// Layout: [0]=magic  [1..8]=valid_flags  [9..72]=preset_bits[0..7][0..7]
+#define FLASH_SIZE   (1 + PRESET_COUNT + PRESET_COUNT * 8)   // 73 bytes
+
+static void flash_save(void)
+{
+    u8 buf[FLASH_SIZE];
+    buf[0] = FLASH_MAGIC;
+    for (int s = 0; s < PRESET_COUNT; s++) {
+        buf[1 + s] = g_preset_valid[s];
+        for (int b = 0; b < 8; b++)
+            buf[1 + PRESET_COUNT + s*8 + b] = g_preset[s][b];
+    }
+    hal_write_flash(0, buf, FLASH_SIZE);
+}
+
+static void flash_load(void)
+{
+    u8 buf[FLASH_SIZE];
+    hal_read_flash(0, buf, FLASH_SIZE);
+    if (buf[0] != FLASH_MAGIC) return;
+    for (int s = 0; s < PRESET_COUNT; s++) {
+        g_preset_valid[s] = buf[1 + s] ? 1 : 0;
+        for (int b = 0; b < 8; b++)
+            g_preset[s][b] = buf[1 + PRESET_COUNT + s*8 + b];
+    }
+}
+
+// ____________________________________________________________________________
+// LED helpers
+
+static void set_inner_leds(void)
+{
+    for (int row = 1; row <= 8; row++) {
+        for (int col = 1; col <= 8; col++) {
+            u8 idx = (u8)(row*10 + col);
+            int active = (g_slot >= 0) && pad_is_active(g_slot, col, row);
+
+            if (g_mode == MODE_PLAY) {
+                if (active && g_playing_row[col] == (u8)row)
+                    hal_plot_led(TYPEPAD, idx, MAXLED, MAXLED, 0);  // yellow = playing
+                else if (active)
+                    hal_plot_led(TYPEPAD, idx, 0, 0, MAXLED);       // blue = ready
+                else
+                    hal_plot_led(TYPEPAD, idx, 0, 0, 0);
+            } else {
+                hal_plot_led(TYPEPAD, idx, active ? MAXLED : 0, 0, 0);
+            }
+        }
+    }
+}
+
+static void set_left_col_leds(void)
+{
+    for (int slot = 0; slot < PRESET_COUNT; slot++) {
+        u8 idx = (u8)((slot + 1) * 10);  // 10, 20, ..., 80
+
+        if (slot == (int)g_slot && g_mode == MODE_PROG) {
+            hal_plot_led(TYPEPAD, idx, MAXLED, 0, 0);          // red  = being edited
+        } else if (slot == (int)g_slot) {
+            hal_plot_led(TYPEPAD, idx, MAXLED, MAXLED, 0);     // bright yellow = active in play
+        } else if (g_preset_valid[slot]) {
+            hal_plot_led(TYPEPAD, idx, MAXLED/2, MAXLED/2, 0); // dim yellow = has data
+        } else {
+            hal_plot_led(TYPEPAD, idx, 0, 0, 0);               // off = empty
+        }
+    }
+}
+
+static void set_mode_btn_led(void)
+{
+    if (g_mode == MODE_PROG)
+        hal_plot_led(TYPEPAD, BTN_MODE, MAXLED, MAXLED/3, 0);  // orange = prog active
+    else
+        hal_plot_led(TYPEPAD, BTN_MODE, 0, 8, 12);             // dim teal = play (tap to edit)
+}
+
+static void update_all_leds(void)
+{
+    set_inner_leds();
+    set_left_col_leds();
+    set_mode_btn_led();
+}
+
+// ____________________________________________________________________________
+// App callbacks
 
 void app_surface_event(u8 type, u8 index, u8 value)
 {
-    switch (type)
-    {
-        case  TYPEPAD:
-        {
-            // example - send MIDI program change
-            // hal_send_midi(USBMIDI, 0xC2, 0xC3, 0);
-            // hal_send_midi(DINMIDI, 0xC3, 0xC4, 0);
-            uint8_t midi = 0xC0;
-            uint8_t midi_value = 0x00;
+    if (type != TYPEPAD) return;
 
-            // last number (channel starts at 1)
-            midi += (index % 10) - 1;
-            // get first number (program at 0)
-            midi_value += 8 - (index / (int)pow(10, 1));
+    int col = index % 10;
+    int row = index / 10;
 
-            if (midi_stored != midi || midi_value_stored != midi_value )
-            {
-                // turn of old led en turn on new led, but only if on the same 
-                // midi channel
+    // ---- Mode toggle button (91) ----
+    if (index == BTN_MODE) {
+        if (!value) return;
+        g_mode = (g_mode == MODE_PLAY) ? MODE_PROG : MODE_PLAY;
+        update_all_leds();
+        return;
+    }
 
-                // wanneer het midi kanaal het zelfde is moeten 
-                // niet de vorige, maar de andere in de zelfde row moeten uit
-                //if(midi_stored == midi)
-                //{
-                for (int i = 0; i <= 99; i++) {
-                    if (i % 10 == (index % 10)) {
-                        hal_plot_led(TYPEPAD, i, MAXLED, 0, 0);
-                    }
-                }
-                //}
-
-
-                hal_plot_led(TYPEPAD, index, 0, MAXLED, 0);
-
-
-                hal_send_midi(USBMIDI, midi, midi_value, 0);
-                hal_send_midi(DINMIDI, midi, midi_value, 0);
-                midi_stored = midi;
-                midi_value_stored = midi_value;
-            }
-
-            // toggle it and store it off, so we can save to flash if we want to
-            // if (value)
-            // {
-            //     g_Buttons[index] = MAXLED * !g_Buttons[index];
-            // }
-            
-            // example - light / extinguish pad LEDs
-            // hal_plot_led(TYPEPAD, index, 0, 0, g_Buttons[index]);
-            
-            // example - send MIDI
-            // hal_send_midi(DINMIDI, NOTEON | 0, index, value);
-            
+    // ---- Bottom edge (row 0, col 1-8): send MIDI in play mode ----
+    // In play mode these trigger an empty/stop clip per track.
+    // In prog mode, col 1 (BTN_DELETE) tracks hold state for delete gesture.
+    if (row == 0 && col >= 1 && col <= 8) {
+        if (g_mode == MODE_PLAY) {
+            if (!value) return;
+            hal_send_midi(USBMIDI, (u8)(0xC0 + col - 1), 8, 0);
+            hal_send_midi(DINMIDI, (u8)(0xC0 + col - 1), 8, 0);
+            g_playing_row[col] = 0;  // clear playing state for this track
+            set_inner_leds();
+        } else {
+            // prog mode: only button 1 is the delete-hold
+            if (index == BTN_DELETE)
+                g_btn_del_held = value ? 1 : 0;
         }
-        break;
-            
-        case TYPESETUP:
-        {
-            if (value)
-            {
-                // save button states to flash (reload them by power cycling the hardware!)
-                hal_write_flash(0, g_Buttons, BUTTON_COUNT);
+        return;
+    }
+
+    // ---- Inner 8×8 pads ----
+    if (col >= 1 && col <= 8 && row >= 1 && row <= 8) {
+        if (g_mode == MODE_PLAY) {
+            if (!value) return;
+            if (g_slot >= 0 && pad_is_active(g_slot, col, row)) {
+                g_playing_row[col] = (u8)row;
+                set_inner_leds();
+                hal_send_midi(USBMIDI, (u8)(0xC0 + col - 1), (u8)(8 - row), 0);
+                hal_send_midi(DINMIDI, (u8)(0xC0 + col - 1), (u8)(8 - row), 0);
+            }
+        } else {  // MODE_PROG
+            if (value && g_slot >= 0) {
+                pad_toggle(g_slot, col, row);
+                set_inner_leds();
+                set_left_col_leds();  // valid flag may have changed
+                flash_save();
             }
         }
-        break;
+        return;
+    }
+
+    if (!value) return;   // left column only acts on press
+
+    // ---- Left column: preset slot buttons (col 0, rows 1-8) ----
+    if (col == 0 && row >= 1 && row <= 8) {
+        int slot = row - 1;
+        if (g_mode == MODE_PROG && g_btn_del_held) {
+            delete_slot(slot);
+            update_all_leds();
+            flash_save();
+        } else {
+            g_slot = (s8)slot;
+            update_all_leds();
+        }
+        return;
     }
 }
-
-//______________________________________________________________________________
 
 void app_midi_event(u8 port, u8 status, u8 d1, u8 d2)
 {
-    // example - MIDI interface functionality for USB "MIDI" port -> DIN port
-    if (port == USBMIDI)
-    {
-        hal_send_midi(DINMIDI, status, d1, d2);
-    }
-    
-    // // example -MIDI interface functionality for DIN -> USB "MIDI" port port
-    if (port == DINMIDI)
-    {
-        hal_send_midi(USBMIDI, status, d1, d2);
-    }
+    if (port == USBMIDI) hal_send_midi(DINMIDI, status, d1, d2);
+    if (port == DINMIDI)  hal_send_midi(USBMIDI, status, d1, d2);
 }
 
-//______________________________________________________________________________
-
-void app_sysex_event(u8 port, u8 * data, u16 count)
-{
-    // example - respond to UDI messages?
-}
-
-//______________________________________________________________________________
-
-void app_aftertouch_event(u8 index, u8 value)
-{
-    // example - send poly aftertouch to MIDI ports
-    hal_send_midi(USBMIDI, POLYAFTERTOUCH | 0, index, value);
-    
-    
-}
-
-//______________________________________________________________________________
-
-void app_cable_event(u8 type, u8 value)
-{
-    // example - light the Setup LED to indicate cable connections
-    if (type == MIDI_IN_CABLE)
-    {
-        hal_plot_led(TYPESETUP, 0, 0, value, 0); // green
-    }
-    else if (type == MIDI_OUT_CABLE)
-    {
-        hal_plot_led(TYPESETUP, 0, value, 0, 0); // red
-    }
-}
-
-//______________________________________________________________________________
-
-void app_timer_event()
-{
-//     // example - send MIDI clock at 125bpm
-// #define TICK_MS 20
-    
-//     static u8 ms = TICK_MS;
-    
-//     if (++ms >= TICK_MS)
-//     {
-//         ms = 0;
-        
-//         // send a clock pulse up the USB
-//         hal_send_midi(USBSTANDALONE, MIDITIMINGCLOCK, 0, 0);
-//     }
-    
-// 	// alternative example - show raw ADC data as LEDs
-// 	for (int i=0; i < PAD_COUNT; ++i)
-// 	{
-// 		// raw adc values are 12 bit, but LEDs are 6 bit.
-// 		// Let's saturate into r;g;b for a rainbow effect to show pressure
-// 		u16 r = 0;
-// 		u16 g = 0;
-// 		u16 b = 0;
-		
-// 		u16 x = (3 * MAXLED * g_ADC[i]) >> 12;
-		
-// 		if (x < MAXLED)
-// 		{
-// 			r = x;
-// 		}
-// 		else if (x >= MAXLED && x < (2*MAXLED))
-// 		{
-// 			r = 2*MAXLED - x;
-// 			g = x - MAXLED;
-// 		}
-// 		else
-// 		{
-// 			g = 3*MAXLED - x;
-// 			b = x - 2*MAXLED;
-// 		}
-		
-// 		hal_plot_led(TYPEPAD, ADC_MAP[i], r, g, b);
-// 	}
-}
-
-//______________________________________________________________________________
+void app_sysex_event(u8 port, u8 *data, u16 count)  { }
+void app_aftertouch_event(u8 index, u8 value)        { }
+void app_cable_event(u8 type, u8 value)              { }
+void app_timer_event(void)                           { }
 
 void app_init(const u16 *adc_raw)
 {
-    // example - load button states from flash
-    hal_read_flash(0, g_Buttons, BUTTON_COUNT);
-    
-    // example - light the LEDs to say hello!
-    for (int i = 0; i <= 99; i++) {
-        hal_plot_led(TYPEPAD, i, 0, 0, MAXLED);            
-    }
+    g_ADC             = adc_raw;
+    g_mode            = MODE_PLAY;
+    g_slot            = -1;
+    g_btn_del_held    = 0;
+    memset(g_preset,       0, sizeof(g_preset));
+    memset(g_preset_valid, 0, sizeof(g_preset_valid));
+    memset(g_playing_row,  0, sizeof(g_playing_row));
 
-    // for (int i=0; i < 10; ++i)
-    // {
-    //     for (int j=0; j < 10; ++j)
-    //     {
-    //         u8 b = g_Buttons[j*10 + i];
-            
-    //         hal_plot_led(TYPEPAD, j*10 + i, 0, 0, b);
-    //     }
-    // }
-	
-	// store off the raw ADC frame pointer for later use
-	g_ADC = adc_raw;
+    flash_load();
+    update_all_leds();
 }
