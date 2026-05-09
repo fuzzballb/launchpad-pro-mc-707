@@ -154,7 +154,7 @@ static void set_left_col_leds(void)
         } else if (slot == (int)g_slot) {
             hal_plot_led(TYPEPAD, idx, MAXLED, MAXLED, 0);     // bright yellow = active in play
         } else if (g_preset_valid[slot]) {
-            hal_plot_led(TYPEPAD, idx, MAXLED/2, MAXLED/2, 0); // dim yellow = has data
+            hal_plot_led(TYPEPAD, idx, 0, 0, MAXLED/2);        // dim blue = has data, not active
         } else {
             hal_plot_led(TYPEPAD, idx, 0, 0, 0);               // off = empty
         }
