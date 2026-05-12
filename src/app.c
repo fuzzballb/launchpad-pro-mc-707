@@ -43,6 +43,7 @@
 // Button indices
 #define BTN_MODE      91      // top row: toggle play/prog mode
 #define BTN_DELETE    1       // bottom row: hold + left-col = delete that preset
+#define BTN_DESELECT  98      // top row: stop all tracks / deselect row
 
 // ____________________________________________________________________________
 // State
@@ -167,6 +168,7 @@ static void set_mode_btn_led(void)
         hal_plot_led(TYPEPAD, BTN_MODE, MAXLED, MAXLED/3, 0);  // orange = prog active
     else
         hal_plot_led(TYPEPAD, BTN_MODE, 0, 8, 12);             // dim teal = play (tap to edit)
+    hal_plot_led(TYPEPAD, BTN_DESELECT, 8, 0, 0);              // dim red = stop all
 }
 
 static void set_bottom_edge_leds(void)
@@ -180,12 +182,37 @@ static void set_bottom_edge_leds(void)
     }
 }
 
+static void set_right_col_leds(void)
+{
+    for (int row = 1; row <= 8; row++) {
+        u8 idx = (u8)(row * 10 + 9);
+        if (g_slot < 0 || g_mode != MODE_PLAY) {
+            hal_plot_led(TYPEPAD, idx, 0, 0, 0);
+            continue;
+        }
+        int any_active = 0, any_playing = 0;
+        for (int col = 1; col <= 8; col++) {
+            if (pad_is_active(g_slot, col, row)) {
+                any_active = 1;
+                if (g_playing_row[col] == (u8)row) any_playing = 1;
+            }
+        }
+        if (any_playing)
+            hal_plot_led(TYPEPAD, idx, MAXLED, MAXLED, 0);   // yellow = row is playing
+        else if (any_active)
+            hal_plot_led(TYPEPAD, idx, 0, MAXLED/2, 0);      // dim green = row has pads
+        else
+            hal_plot_led(TYPEPAD, idx, 0, 0, 0);
+    }
+}
+
 static void update_all_leds(void)
 {
     set_inner_leds();
     set_left_col_leds();
     set_mode_btn_led();
     set_bottom_edge_leds();
+    set_right_col_leds();
 }
 
 // ____________________________________________________________________________
@@ -211,19 +238,32 @@ void app_surface_event(u8 type, u8 index, u8 value)
         return;
     }
 
-    // ---- Bottom edge (row 0, col 1-8): send MIDI in play mode ----
-    // In play mode these trigger an empty/stop clip per track.
-    // In prog mode, col 1 (BTN_DELETE) tracks hold state for delete gesture.
+    // ---- Deselect all button (98): clear local playing state only ----
+    // MC-707 has no "stop clip" PC message; tracks keep looping on the device.
+    if (index == BTN_DESELECT) {
+        if (!value) return;
+        if (g_mode == MODE_PLAY) {
+            for (int c = 1; c <= 8; c++)
+                g_playing_row[c] = 0;
+            set_inner_leds();
+            set_bottom_edge_leds();
+            set_right_col_leds();
+        }
+        return;
+    }
+
+    // ---- Bottom edge (row 0, col 1-8): clear local playing state for that track ----
+    // MC-707 has no "stop clip" PC message, so no MIDI is sent — the track keeps
+    // looping on the device. This just resets the Launchpad's tracking state.
+    // In prog mode, col 1 (BTN_DELETE) tracks hold state for the delete gesture.
     if (row == 0 && col >= 1 && col <= 8) {
         if (g_mode == MODE_PLAY) {
             if (!value) return;
-            hal_send_midi(USBMIDI, (u8)(0xC0 + col - 1), 8, 0);
-            hal_send_midi(DINMIDI, (u8)(0xC0 + col - 1), 8, 0);
-            g_playing_row[col] = 0;  // clear playing state for this track
+            g_playing_row[col] = 0;
             set_inner_leds();
             set_bottom_edge_leds();
+            set_right_col_leds();
         } else {
-            // prog mode: only button 1 is the delete-hold
             if (index == BTN_DELETE)
                 g_btn_del_held = value ? 1 : 0;
         }
@@ -238,6 +278,7 @@ void app_surface_event(u8 type, u8 index, u8 value)
                 g_playing_row[col] = (u8)row;
                 set_inner_leds();
                 set_bottom_edge_leds();
+                set_right_col_leds();
                 hal_send_midi(USBMIDI, (u8)(0xC0 + col - 1), (u8)(8 - row), 0);
                 hal_send_midi(DINMIDI, (u8)(0xC0 + col - 1), (u8)(8 - row), 0);
             }
@@ -246,12 +287,32 @@ void app_surface_event(u8 type, u8 index, u8 value)
                 pad_toggle(g_slot, col, row);
                 set_inner_leds();
                 set_left_col_leds();  // valid flag may have changed
+                set_right_col_leds();
             }
         }
         return;
     }
 
-    if (!value) return;   // left column only acts on press
+    if (!value) return;   // edge columns only act on press
+
+    // ---- Right column: activate all active pads in that row (play mode only) ----
+    if (col == 9 && row >= 1 && row <= 8) {
+        if (g_mode == MODE_PLAY && g_slot >= 0) {
+            for (int c = 1; c <= 8; c++) {
+                if (pad_is_active(g_slot, c, row)) {
+                    g_playing_row[c] = (u8)row;
+                    hal_send_midi(USBMIDI, (u8)(0xC0 + c - 1), (u8)(8 - row), 0);
+                    hal_send_midi(DINMIDI, (u8)(0xC0 + c - 1), (u8)(8 - row), 0);
+                } else {
+                    g_playing_row[c] = 0;  // no MIDI: MC-707 has no stop-clip PC
+                }
+            }
+            set_inner_leds();
+            set_bottom_edge_leds();
+            set_right_col_leds();
+        }
+        return;
+    }
 
     // ---- Left column: preset slot buttons (col 0, rows 1-8) ----
     if (col == 0 && row >= 1 && row <= 8) {
